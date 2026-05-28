@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -13,16 +14,41 @@ const PORT = process.env.PORT || 3001;
 const TMP_DIR = path.join(os.tmpdir(), 'descarga-app');
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
+const BIN_DIR = path.join(os.tmpdir(), 'bins');
+if (!fs.existsSync(BIN_DIR)) fs.mkdirSync(BIN_DIR, { recursive: true });
+const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp');
+
 const fileTokens = new Map();
 
-// Instalar yt-dlp al inicio
-const { execSync } = require('child_process');
-try {
-  execSync('yt-dlp --version', { stdio: 'ignore' });
-  console.log('yt-dlp ya instalado');
-} catch {
-  console.log('Instalando yt-dlp...');
-  execSync('npm install -g yt-dlp-wrap', { stdio: 'inherit' });
+// Descargar yt-dlp binario si no existe
+function downloadYtDlp() {
+  return new Promise((resolve, reject) => {
+    if (fs.existsSync(YTDLP_PATH)) {
+      console.log('[yt-dlp] ya existe en', YTDLP_PATH);
+      return resolve();
+    }
+    console.log('[yt-dlp] descargando binario...');
+    const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+    const file = fs.createWriteStream(YTDLP_PATH);
+    const request = (reqUrl) => {
+      https.get(reqUrl, (res) => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          return request(res.headers.location);
+        }
+        res.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          fs.chmodSync(YTDLP_PATH, '755');
+          console.log('[yt-dlp] binario listo en', YTDLP_PATH);
+          resolve();
+        });
+      }).on('error', (err) => {
+        fs.unlink(YTDLP_PATH, () => {});
+        reject(err);
+      });
+    };
+    request(url);
+  });
 }
 
 app.use(cors({
@@ -46,7 +72,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/info', (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: true, message: 'URL requerida' });
-  exec(`yt-dlp --dump-json --no-playlist "${url}"`, { timeout: 20000 }, (err, stdout) => {
+  exec(`"${YTDLP_PATH}" --dump-json --no-playlist "${url}"`, { timeout: 20000 }, (err, stdout) => {
     if (err) return res.status(500).json({ error: true, message: 'No se pudo obtener info' });
     try {
       const d = JSON.parse(stdout);
@@ -74,7 +100,7 @@ app.post('/api/download', (req, res) => {
   const quality = (videoQuality === 'max' || videoQuality === '9000') ? '9000' : (videoQuality || '1080');
   const uid = crypto.randomBytes(8).toString('hex');
 
-  exec(`yt-dlp --dump-json --no-playlist "${url}"`, { timeout: 20000 }, (infoErr, infoStdout) => {
+  exec(`"${YTDLP_PATH}" --dump-json --no-playlist "${url}"`, { timeout: 20000 }, (infoErr, infoStdout) => {
     let videoTitle = 'descarga';
     if (!infoErr && infoStdout) {
       try { videoTitle = JSON.parse(infoStdout).title || 'descarga'; } catch {}
@@ -85,13 +111,13 @@ app.post('/api/download', (req, res) => {
     let outputTemplate, ytdlpCmd;
     if (isAudio) {
       outputTemplate = path.join(TMP_DIR, `${uid}.%(ext)s`);
-      ytdlpCmd = `yt-dlp --no-playlist -x --audio-format ${audioFormat || 'mp3'} --audio-quality 0 -o "${outputTemplate}" "${url}"`;
+      ytdlpCmd = `"${YTDLP_PATH}" --no-playlist -x --audio-format ${audioFormat || 'mp3'} --audio-quality 0 -o "${outputTemplate}" "${url}"`;
     } else {
       outputTemplate = path.join(TMP_DIR, `${uid}.mp4`);
       let fmt = quality === '9000'
         ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
         : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`;
-      ytdlpCmd = `yt-dlp --no-playlist -f "${fmt}" --merge-output-format mp4 -o "${outputTemplate}" "${url}"`;
+      ytdlpCmd = `"${YTDLP_PATH}" --no-playlist -f "${fmt}" --merge-output-format mp4 -o "${outputTemplate}" "${url}"`;
     }
 
     console.log('[cmd]', ytdlpCmd);
@@ -128,7 +154,6 @@ app.get('/api/file/:token', (req, res) => {
     mp3:'audio/mpeg', ogg:'audio/ogg', opus:'audio/opus', wav:'audio/wav', m4a:'audio/mp4'
   };
   const mime = mimeTypes[entry.ext] || 'application/octet-stream';
-
   const asciiName = entry.filename.replace(/[^\x20-\x7E]/g, '_');
   const encodedName = encodeURIComponent(entry.filename).replace(/'/g, '%27');
 
@@ -179,7 +204,13 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.
 
 app.use((req, res) => res.status(404).json({ error: true, message: 'Ruta no encontrada' }));
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 Descarga.app Backend en http://localhost:${PORT}`);
-  console.log(`📁 Temp: ${TMP_DIR}\n`);
+// Arrancar servidor después de descargar yt-dlp
+downloadYtDlp().then(() => {
+  app.listen(PORT, () => {
+    console.log(`\n🚀 Descarga.app Backend en http://localhost:${PORT}`);
+    console.log(`📁 Temp: ${TMP_DIR}\n`);
+  });
+}).catch(err => {
+  console.error('Error descargando yt-dlp:', err);
+  process.exit(1);
 });
