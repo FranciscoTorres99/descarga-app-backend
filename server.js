@@ -13,14 +13,13 @@ const PORT = process.env.PORT || 3001;
 const TMP_DIR = path.join(os.tmpdir(), 'descarga-app');
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
-// Mapa de tokens -> archivo
 const fileTokens = new Map();
 
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1') || origin.startsWith('file://')) return callback(null, true);
-    const allowed = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim());
+    const allowed = (process.env.ALLOWED_ORIGINS || 'https://descarga-app.up.railway.app').split(',').map(s => s.trim());
     if (allowed.includes(origin)) return callback(null, true);
     callback(new Error('Not allowed by CORS'));
   },
@@ -65,7 +64,6 @@ app.post('/api/download', (req, res) => {
   const quality = (videoQuality === 'max' || videoQuality === '9000') ? '9000' : (videoQuality || '1080');
   const uid = crypto.randomBytes(8).toString('hex');
 
-  // Paso 1: obtener titulo
   exec(`yt-dlp --dump-json --no-playlist "${url}"`, { timeout: 20000 }, (infoErr, infoStdout) => {
     let videoTitle = 'descarga';
     if (!infoErr && infoStdout) {
@@ -88,7 +86,6 @@ app.post('/api/download', (req, res) => {
 
     console.log('[cmd]', ytdlpCmd);
 
-    // Paso 2: descargar
     exec(ytdlpCmd, { timeout: 300000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         console.error('[error]', stderr);
@@ -102,7 +99,6 @@ app.post('/api/download', (req, res) => {
       const ext = path.extname(filePath).slice(1);
       const filename = `${safeTitle}.${ext}`;
 
-      // Crear token de descarga (válido 5 minutos)
       const token = crypto.randomBytes(16).toString('hex');
       fileTokens.set(token, { filePath, filename, ext, expires: Date.now() + 5 * 60 * 1000 });
 
@@ -112,7 +108,6 @@ app.post('/api/download', (req, res) => {
   });
 });
 
-// Endpoint de descarga por token — el navegador descarga directamente desde acá
 app.get('/api/file/:token', (req, res) => {
   const entry = fileTokens.get(req.params.token);
   if (!entry) return res.status(404).json({ error: true, message: 'Token no encontrado o expirado' });
@@ -124,7 +119,6 @@ app.get('/api/file/:token', (req, res) => {
   };
   const mime = mimeTypes[entry.ext] || 'application/octet-stream';
 
-  // Nombre ASCII para header básico + UTF-8 para navegadores modernos
   const asciiName = entry.filename.replace(/[^\x20-\x7E]/g, '_');
   const encodedName = encodeURIComponent(entry.filename).replace(/'/g, '%27');
 
@@ -159,7 +153,6 @@ app.get('/api/platforms', (req, res) => {
   ]});
 });
 
-// Limpiar tokens y archivos viejos
 setInterval(() => {
   const now = Date.now();
   for (const [token, entry] of fileTokens.entries()) {
@@ -170,6 +163,10 @@ setInterval(() => {
     try { if (now - fs.statSync(fp).mtimeMs > 600000) fs.unlinkSync(fp); } catch {}
   });
 }, 60000);
+
+// Servir frontend
+app.use(express.static(path.join(__dirname, '../frontend')));
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../frontend', 'index.html')));
 
 app.use((req, res) => res.status(404).json({ error: true, message: 'Ruta no encontrada' }));
 
