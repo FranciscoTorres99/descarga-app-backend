@@ -15,6 +15,16 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
 const fileTokens = new Map();
 
+// Instalar yt-dlp al inicio
+const { execSync } = require('child_process');
+try {
+  execSync('yt-dlp --version', { stdio: 'ignore' });
+  console.log('yt-dlp ya instalado');
+} catch {
+  console.log('Instalando yt-dlp...');
+  execSync('npm install -g yt-dlp-wrap', { stdio: 'inherit' });
+}
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
