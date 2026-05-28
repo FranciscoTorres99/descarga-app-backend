@@ -28,7 +28,7 @@ function downloadYtDlp() {
       return resolve();
     }
     console.log('[yt-dlp] descargando binario...');
-    const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+   const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux';
     const file = fs.createWriteStream(YTDLP_PATH);
     const request = (reqUrl) => {
       https.get(reqUrl, (res) => {
